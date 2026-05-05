@@ -24,6 +24,10 @@ internal static class AbittiVersionProbe
                         if (displayName is null || displayName.IndexOf("Abitti", StringComparison.OrdinalIgnoreCase) < 0)
                             continue;
 
+                        // Ignore this product itself ("Abitti Agent"), we only want the real Abitti client version.
+                        if (displayName.IndexOf("Abitti Agent", StringComparison.OrdinalIgnoreCase) >= 0)
+                            continue;
+
                         var ver = sub!.GetValue("DisplayVersion") as string;
                         if (!string.IsNullOrWhiteSpace(ver))
                             return ver.Trim();

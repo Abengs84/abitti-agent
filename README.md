@@ -76,6 +76,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-msi.ps1 -Version 0.1.0
 MSI output:
 - `artifacts\msi\AbittiAgent-0.1.0-win-x64.msi`
 
+Important for unsigned MSI builds:
+- To install the MSI manually, Smart App Control may need to be turned off in Windows Security (`App & browser control`).
+
 ### Install from GitHub Releases (client machine)
 
 ```powershell
