@@ -18,30 +18,43 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
     private readonly string _installerUrl =
         configuration["AbittiAgent:InstallerUrl"] ?? "https://dl.abitti.fi/AbittiCandidateInstaller.msi";
     private readonly string _localApiUrl =
-        configuration["AbittiAgent:LocalApiUrl"] ?? "http://127.0.0.1:51881/";
+        configuration["AbittiAgent:LocalApiUrl"] ?? "http://127.0.0.1:38181/";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation("AbittiAgent.Service started.");
-        using var listener = new HttpListener();
-        listener.Prefixes.Add(_localApiUrl.TrimEnd('/') + "/");
-        listener.Start();
+        var prefix = _localApiUrl.TrimEnd('/') + "/";
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            using var listener = new HttpListener();
+            listener.Prefixes.Add(prefix);
 
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested)
+            try
             {
-                var context = await listener.GetContextAsync().WaitAsync(stoppingToken);
-                _ = Task.Run(() => HandleRequestAsync(context, stoppingToken), stoppingToken);
+                listener.Start();
+                logger.LogInformation("Local API listening on {Prefix}", prefix);
+
+                while (!stoppingToken.IsCancellationRequested)
+                {
+                    var context = await listener.GetContextAsync().WaitAsync(stoppingToken);
+                    _ = Task.Run(() => HandleRequestAsync(context, stoppingToken), stoppingToken);
+                }
             }
-        }
-        catch (OperationCanceledException)
-        {
-            // shutdown
-        }
-        finally
-        {
-            listener.Stop();
+            catch (HttpListenerException ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                logger.LogError(ex, "Failed to bind local API on {Prefix}. Retrying in 10 seconds.", prefix);
+                await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // shutdown
+                break;
+            }
+            finally
+            {
+                if (listener.IsListening)
+                    listener.Stop();
+            }
         }
     }
 

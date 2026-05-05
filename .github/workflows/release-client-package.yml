@@ -1,0 +1,65 @@
+name: Release Client Package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore .\abitti-agent.sln
+
+      - name: Resolve release version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $releaseVersion = "${{ github.ref_name }}"
+            $packageVersion = $releaseVersion.TrimStart("v")
+          } else {
+            $releaseVersion = "manual-${{ github.run_number }}"
+            $packageVersion = "0.0.${{ github.run_number }}"
+          }
+          "version=$releaseVersion" >> $env:GITHUB_OUTPUT
+          "package_version=$packageVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          .\scripts\build-msi.ps1 -Configuration Release -Runtime win-x64 -Version ${{ steps.version.outputs.package_version }}
+
+      - name: Build fallback ZIP package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path .\out\client-package -Force | Out-Null
+          Copy-Item .\artifacts\msi-staging\payload\AbittiAgent.Service.exe .\out\client-package\ -Force
+          Copy-Item .\artifacts\msi-staging\payload\appsettings.json .\out\client-package\ -Force
+          Copy-Item .\artifacts\msi-staging\payload\AbittiAgent.Tray.exe .\out\client-package\ -Force
+          Copy-Item .\scripts\install-client.ps1 .\out\client-package\ -Force
+          Compress-Archive -Path .\out\client-package\* -DestinationPath .\out\abitti-agent-client-win-x64.zip -Force
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            .\artifacts\msi\AbittiAgent-*.msi
+            .\out\abitti-agent-client-win-x64.zip

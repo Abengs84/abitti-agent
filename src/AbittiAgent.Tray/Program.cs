@@ -33,7 +33,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 {
     private const string DiscoveryRequest = "ABITTI_DISCOVER_REQUEST_V1";
     private const string DiscoveryResponsePrefix = "ABITTI_DISCOVER_RESPONSE_V1|";
-    private const string LocalServiceBaseUrlDefault = "http://127.0.0.1:51881";
+    private const string LocalServiceBaseUrlDefault = "http://127.0.0.1:38181";
 
     private readonly NotifyIcon _notifyIcon;
     private readonly CancellationTokenSource _cts = new();
@@ -52,6 +52,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private DateTimeOffset _lastInstallUtc = DateTimeOffset.MinValue;
     private string _lastInstallResult = string.Empty;
     private string _lastError = string.Empty;
+    private bool _hasObservedInstallState;
+    private bool _lastInstallRunning;
     private string? _serverUrl;
 
     internal TrayApplicationContext()
@@ -131,7 +133,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         continue;
                     }
 
-                    ShowNotification("Server found", ShortServer(_serverUrl), ToolTipIcon.Info);
                     _lastHeartbeatSentUtc = DateTimeOffset.MinValue;
                     _lastCommandPollUtc = DateTimeOffset.MinValue;
                 }
@@ -146,7 +147,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 if (!heartbeatOk)
                 {
                     UpdateTrayStatus("Disconnected");
-                    ShowNotification("Connection lost", "Retrying server discovery", ToolTipIcon.Warning);
                     _serverUrl = null;
                     await Task.Delay(_offlineRetryInterval, token).ConfigureAwait(false);
                     continue;
@@ -196,7 +196,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         switch (command.Type.Trim().ToLowerInvariant())
         {
             case "check_now":
-                ShowNotification("Abitti Agent", "Running check now", ToolTipIcon.Info);
                 _lastHeartbeatSentUtc = DateTimeOffset.MinValue;
                 await SendHeartbeatAsync(serverUrl, ct).ConfigureAwait(false);
                 break;
@@ -267,6 +266,28 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _lastInstallUtc = status.LastInstallUtc;
             _lastInstallResult = status.LastInstallResult ?? string.Empty;
             _lastError = status.LastError ?? string.Empty;
+
+            if (!_hasObservedInstallState)
+            {
+                _lastInstallRunning = status.InstallRunning;
+                _hasObservedInstallState = true;
+                return;
+            }
+
+            if (status.InstallRunning && !_lastInstallRunning)
+            {
+                ShowNotification("Abitti Agent", "Abitti2 installation started", ToolTipIcon.Info);
+            }
+            else if (!status.InstallRunning && _lastInstallRunning)
+            {
+                var successful = string.Equals(_lastInstallResult, "success", StringComparison.OrdinalIgnoreCase);
+                if (successful)
+                    ShowNotification("Abitti Agent", "Abitti2 installation completed", ToolTipIcon.Info);
+                else
+                    ShowNotification("Abitti Agent", "Abitti2 installation failed", ToolTipIcon.Error);
+            }
+
+            _lastInstallRunning = status.InstallRunning;
         }
         catch
         {

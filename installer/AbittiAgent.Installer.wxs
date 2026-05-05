@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Abitti Agent"
+    Manufacturer="Korsholms Gymnasium"
+    Version="$(var.Version)"
+    UpgradeCode="8D6C7096-8FBE-4E4F-9771-AF72273E2656"
+    InstallerVersion="500"
+    Scope="perMachine">
+
+    <SummaryInformation Description="Abitti Agent client installer" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Abitti Agent is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="AbittiAgentIcon" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="AbittiAgentIcon" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="AbittiAgent">
+        <Component Id="CmpServiceExe" Guid="*">
+          <File Id="FilServiceExe" Source="$(var.PayloadDir)\AbittiAgent.Service.exe" KeyPath="yes" />
+          <ServiceInstall
+            Id="SvcInstall"
+            Name="AbittiAgentService"
+            DisplayName="Abitti Agent Service"
+            Description="Runs silent Abitti updates in background."
+            Type="ownProcess"
+            Start="auto"
+            ErrorControl="normal"
+            Vital="yes" />
+          <ServiceControl
+            Id="SvcControl"
+            Name="AbittiAgentService"
+            Start="install"
+            Stop="both"
+            Remove="uninstall"
+            Wait="no" />
+        </Component>
+
+        <Component Id="CmpTrayExe" Guid="*">
+          <File Id="FilTrayExe" Source="$(var.PayloadDir)\AbittiAgent.Tray.exe" KeyPath="yes" />
+        </Component>
+
+        <Component Id="CmpServiceSettings" Guid="*">
+          <File Id="FilServiceSettings" Source="$(var.PayloadDir)\appsettings.json" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Component Id="CmpTrayAutostart" Guid="*" Directory="INSTALLFOLDER">
+      <RegistryValue
+        Root="HKLM"
+        Key="Software\Microsoft\Windows\CurrentVersion\Run"
+        Name="AbittiAgentTray"
+        Type="string"
+        Value="&quot;[INSTALLFOLDER]AbittiAgent.Tray.exe&quot;"
+        KeyPath="yes" />
+    </Component>
+
+    <Feature Id="MainFeature" Title="Abitti Agent" Level="1">
+      <ComponentRef Id="CmpServiceExe" />
+      <ComponentRef Id="CmpTrayExe" />
+      <ComponentRef Id="CmpServiceSettings" />
+      <ComponentRef Id="CmpTrayAutostart" />
+    </Feature>
+  </Package>
+</Wix>

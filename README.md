@@ -29,7 +29,7 @@ The page includes the admin client list and the API endpoints.
 ## Zero-click install model
 
 - `AbittiAgent.Tray` no longer runs MSI directly.
-- Tray calls local `AbittiAgent.Service` API at `http://127.0.0.1:51881/`.
+- Tray calls local `AbittiAgent.Service` API at `http://127.0.0.1:38181/`.
 - Service performs silent MSI install in background (`msiexec /qn`) as the service account.
 - For true zero-click updates, `AbittiAgent.Service` must be installed and running on each client.
 
@@ -48,6 +48,41 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-client.ps1
 The script registers:
 - Service `AbittiAgentService` as Automatic startup
 - Tray autostart in `HKLM\Software\Microsoft\Windows\CurrentVersion\Run`
+
+## GitHub release package (single file)
+
+The repository includes a GitHub Actions workflow:
+- `.github/workflows/release-client-package.yml`
+
+It builds one MSI package per release (and a fallback zip) containing:
+- `AbittiAgent.Service.exe`
+- `AbittiAgent.Tray.exe`
+- `appsettings.json` (service default)
+- `install-client.ps1`
+
+### Publish package to Releases
+
+- Push a tag like `v0.1.0`, or run the workflow manually.
+- The workflow creates a GitHub Release and uploads:
+  - `AbittiAgent-<version>-win-x64.msi`
+  - `abitti-agent-client-win-x64.zip`
+
+### Build MSI locally
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-msi.ps1 -Version 0.1.0
+```
+
+MSI output:
+- `artifacts\msi\AbittiAgent-0.1.0-win-x64.msi`
+
+### Install from GitHub Releases (client machine)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-client-from-github.ps1 -Owner Abengs84 -Repo abitti-agent -Version latest
+```
+
+Use `-Version v0.1.0` to install a specific release.
 
 ## Client auto-discovery (LAN)
 
