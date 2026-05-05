@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="12" fill="#111827" />
+  <text x="13" y="53" fill="#ffffff" font-size="52" font-family="Segoe UI, Arial, sans-serif" font-weight="700">
+    A
+    <tspan dx="-19" dy="-27" font-size="16">2</tspan>
+  </text>
+</svg>
