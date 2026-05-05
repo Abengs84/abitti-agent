@@ -47,6 +47,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly TimeSpan _offlineRetryInterval;
     private readonly TimeSpan _commandPollInterval;
     private readonly string _localServiceBaseUrl;
+    private readonly string _agentVersion;
     private DateTimeOffset _lastHeartbeatSentUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastCommandPollUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastInstallUtc = DateTimeOffset.MinValue;
@@ -79,6 +80,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _offlineRetryInterval = TimeSpan.FromSeconds(offlineRetrySeconds);
         _commandPollInterval = TimeSpan.FromSeconds(commandPollSeconds);
         _localServiceBaseUrl = configuration["AbittiAgent:LocalServiceBaseUrl"] ?? LocalServiceBaseUrlDefault;
+        _agentVersion = GetAgentVersion();
         _loopTimer = new PeriodicTimer(TimeSpan.FromSeconds(5));
 
         var menu = new ContextMenuStrip();
@@ -297,7 +299,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void UpdateTrayStatus(string status)
     {
-        var text = "Abitti Agent - " + status;
+        var text = $"Abitti Agent {_agentVersion} - {status}";
         if (text.Length > 63)
             text = text[..63];
 
@@ -371,16 +373,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var baseUri = serverBaseUrl.TrimEnd('/') + "/";
         using var http = new HttpClient { BaseAddress = new Uri(baseUri), Timeout = TimeSpan.FromSeconds(30) };
 
-        var agentVer =
-            Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-            ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
-            ?? "0.0.0";
-
         var heartbeat = new ClientHeartbeat(
             ClientIdentity.GetOrCreateClientId(),
             Environment.MachineName,
             RuntimeInformation.OSDescription,
-            agentVer,
+            _agentVersion,
             AbittiVersionProbe.TryReadInstalledVersion(),
             DateTimeOffset.UtcNow,
             _lastInstallUtc,
@@ -438,6 +435,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         var shortText = $"{uri.Host}:{uri.Port}";
         return shortText.Length > 32 ? shortText[..32] : shortText;
+    }
+
+    private static string GetAgentVersion()
+    {
+        return Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
+            ?? "0.0.0";
     }
 
     private static bool IsSystemPendingReboot()

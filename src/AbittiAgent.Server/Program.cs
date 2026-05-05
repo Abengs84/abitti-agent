@@ -47,10 +47,18 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
 {
     static string Esc(string? value) => System.Net.WebUtility.HtmlEncode(value ?? string.Empty);
     var clients = s.ListOrderedByLastSeen();
+    var nowUtc = DateTimeOffset.UtcNow;
+    var staleAfter = TimeSpan.FromSeconds(45);
 
     var rows = string.Join("", clients.Select(c =>
     {
+        var age = nowUtc - c.LastSeenUtc;
+        var isStale = age > staleAfter;
+        var statusClass = isStale ? "status-yellow" : "status-green";
+        var statusText = isStale ? "Missed multiple heartbeats" : "Online";
+        var statusTooltip = $"{statusText} | Last seen: {c.LastSeenUtc.ToLocalTime():yyyy-MM-dd HH:mm} | Last check: {c.LastCheckUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
         var idShort = c.ClientId.Length <= 12 ? c.ClientId : c.ClientId[..12] + "…";
+        var agentShort = ShortAgentVersion(c.AgentVersion);
         var installResult = string.IsNullOrWhiteSpace(c.LastInstallResult) ? "-" : c.LastInstallResult;
         var lastError = string.IsNullOrWhiteSpace(c.LastError) ? "-" : c.LastError;
         var pendingCount = commands.GetPendingCount(c.ClientId);
@@ -65,22 +73,19 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
                         : "idle";
         return $"""
         <tr>
-          <td>{Esc(idShort)}</td>
+          <td><span class="status-dot {statusClass}" title="{Esc(statusTooltip)}"></span>{Esc(idShort)}</td>
           <td>{Esc(c.Hostname)}</td>
           <td>{Esc(c.AbittiVersionInstalled)}</td>
-          <td>{Esc(c.AgentVersion)}</td>
+          <td title="{Esc(c.AgentVersion)}">{Esc(agentShort)}</td>
           <td>{Esc(c.SourceIp)}</td>
-          <td>{c.LastSeenUtc.ToLocalTime():yyyy-MM-dd HH:mm}</td>
-          <td>{c.LastCheckUtc.ToLocalTime():yyyy-MM-dd HH:mm}</td>
           <td>{Esc(installResult)}</td>
           <td>{Esc(lastError)}</td>
           <td>{Esc(cmdStatus)}</td>
-          <td>{(c.PendingReboot ? "Yes" : "No")}</td>
-          <td>
-            <form method="post" action="/api/admin/clients/{Esc(c.ClientId)}/commands/check_now" style="display:inline">
+          <td class="actions-cell">
+            <form method="post" action="/api/admin/clients/{Esc(c.ClientId)}/commands/check_now">
               <button type="submit">Check now</button>
             </form>
-            <form method="post" action="/api/admin/clients/{Esc(c.ClientId)}/commands/install_now" style="display:inline; margin-left:6px">
+            <form method="post" action="/api/admin/clients/{Esc(c.ClientId)}/commands/install_now">
               <button type="submit">Install now</button>
             </form>
           </td>
@@ -97,8 +102,14 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
         "<style>\n" +
         "body { font-family: system-ui, sans-serif; margin: 1.5rem; }\n" +
         "table { border-collapse: collapse; width: 100%; max-width: 1400px; }\n" +
-        "th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }\n" +
+        "th, td { border: 1px solid #ccc; padding: 8px; text-align: left; white-space: nowrap; }\n" +
         "th { background: #f4f4f4; }\n" +
+        ".status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: middle; }\n" +
+        ".status-green { background: #16a34a; }\n" +
+        ".status-yellow { background: #ca8a04; }\n" +
+        ".actions-cell { display: flex; gap: 6px; align-items: center; }\n" +
+        ".actions-cell form { margin: 0; }\n" +
+        ".actions-cell button { min-width: 84px; }\n" +
         "</style>\n" +
         "</head>\n" +
         "<body>\n" +
@@ -106,7 +117,7 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
         $"<p>Clients: <strong>{clients.Count}</strong> | Backend/API: <code>/api/admin/clients</code> — auto-refresh every 10s.</p>\n" +
         "<table>\n" +
         "<thead><tr>\n" +
-        "<th>Client</th><th>Hostname</th><th>Abitti</th><th>Agent</th><th>Source IP</th><th>Last seen</th><th>Last check</th><th>Install result</th><th>Last error</th><th>Cmd status</th><th>Reboot?</th><th>Actions</th>\n" +
+        "<th>Client</th><th>Hostname</th><th>Abitti</th><th>Tray</th><th>Source IP</th><th>Install result</th><th>Last error</th><th>Cmd status</th><th>Actions</th>\n" +
         "</tr></thead>\n" +
         "<tbody>\n" +
         rows +
@@ -260,6 +271,15 @@ static string? TryGetLocalIPv4()
     }
 
     return null;
+}
+
+static string ShortAgentVersion(string version)
+{
+    if (string.IsNullOrWhiteSpace(version))
+        return "-";
+
+    var plusIdx = version.IndexOf('+');
+    return plusIdx > 0 ? version[..plusIdx] : version;
 }
 
 static async Task RunDiscoveryResponderAsync(int port, string advertisedUrl, CancellationToken ct)
