@@ -10,6 +10,20 @@ public sealed class ClientStore
     public void Upsert(ClientHeartbeat heartbeat, string sourceIp)
     {
         var seen = DateTimeOffset.UtcNow;
+
+        // If the same machine reports with a new client ID (e.g. after reinstall/update),
+        // keep only the latest identity row in admin UI.
+        var duplicates = _byId
+            .Where(kvp =>
+                kvp.Key != heartbeat.ClientId &&
+                string.Equals(kvp.Value.Heartbeat.Hostname, heartbeat.Hostname, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(kvp.Value.SourceIp, sourceIp, StringComparison.OrdinalIgnoreCase))
+            .Select(kvp => kvp.Key)
+            .ToList();
+
+        foreach (var duplicateId in duplicates)
+            _byId.TryRemove(duplicateId, out _);
+
         _byId[heartbeat.ClientId] = new StoredClient(heartbeat, sourceIp, seen);
     }
 

@@ -58,7 +58,8 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
         var isStale = age > warnAfter;
         var statusClass = isOffline ? "status-gray" : isStale ? "status-yellow" : "status-green";
         var statusText = isOffline ? "Offline" : isStale ? "Missed multiple heartbeats" : "Online";
-        var statusTooltip = $"{statusText} | Last seen: {c.LastSeenUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
+        var lastSeenText = FormatRelativeWithTimestamp(c.LastSeenUtc, nowUtc);
+        var statusTooltip = $"{statusText} | Last seen: {lastSeenText}";
         var idShort = c.ClientId.Length <= 12 ? c.ClientId : c.ClientId[..12] + "…";
         var agentShort = ShortAgentVersion(c.AgentVersion);
         var installResult = string.IsNullOrWhiteSpace(c.LastInstallResult) ? "-" : c.LastInstallResult;
@@ -74,7 +75,7 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
                         ? "fail"
                         : "idle";
         return $"""
-        <tr>
+        <tr data-offline="{(isOffline ? "true" : "false")}">
           <td><span class="status-dot {statusClass}" title="{Esc(statusTooltip)}"></span>{Esc(idShort)}</td>
           <td>{Esc(c.Hostname)}</td>
           <td>{Esc(c.AbittiVersionInstalled)}</td>
@@ -118,6 +119,10 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
         "<body>\n" +
         "<h1>Abitti Agent — Clients</h1>\n" +
         $"<p>Clients: <strong>{clients.Count}</strong> | Backend/API: <code>/api/admin/clients</code> — auto-refresh every 10s.</p>\n" +
+        "<label style=\"display:inline-flex; gap:8px; align-items:center; margin-bottom:10px;\">" +
+        "<input id=\"hideOffline\" type=\"checkbox\" />" +
+        "<span>Hide offline clients</span>" +
+        "</label>\n" +
         "<table>\n" +
         "<thead><tr>\n" +
         "<th>Client</th><th>Hostname</th><th>Abitti</th><th>Tray</th><th>Source IP</th><th>Install result</th><th>Last error</th><th>Cmd status</th><th>Actions</th>\n" +
@@ -126,6 +131,21 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
         rows +
         "</tbody>\n" +
         "</table>\n" +
+        "<script>\n" +
+        "const hideOffline = document.getElementById('hideOffline');\n" +
+        "const rows = Array.from(document.querySelectorAll('tbody tr'));\n" +
+        "const applyFilter = () => {\n" +
+        "  const hide = hideOffline && hideOffline.checked;\n" +
+        "  rows.forEach(r => {\n" +
+        "    const isOffline = r.getAttribute('data-offline') === 'true';\n" +
+        "    r.style.display = hide && isOffline ? 'none' : '';\n" +
+        "  });\n" +
+        "};\n" +
+        "if (hideOffline) {\n" +
+        "  hideOffline.addEventListener('change', applyFilter);\n" +
+        "  applyFilter();\n" +
+        "}\n" +
+        "</script>\n" +
         "</body>\n</html>";
 
     return Results.Content(html, "text/html; charset=utf-8");
@@ -283,6 +303,23 @@ static string ShortAgentVersion(string version)
 
     var plusIdx = version.IndexOf('+');
     return plusIdx > 0 ? version[..plusIdx] : version;
+}
+
+static string FormatRelativeWithTimestamp(DateTimeOffset timestampUtc, DateTimeOffset nowUtc)
+{
+    var diff = nowUtc - timestampUtc;
+    if (diff < TimeSpan.Zero)
+        diff = TimeSpan.Zero;
+
+    var relative =
+        diff < TimeSpan.FromMinutes(1) ? "just now" :
+        diff < TimeSpan.FromHours(1) ? $"{(int)diff.TotalMinutes} minute{((int)diff.TotalMinutes == 1 ? "" : "s")} ago" :
+        diff < TimeSpan.FromDays(1) ? $"{(int)diff.TotalHours} hour{((int)diff.TotalHours == 1 ? "" : "s")} ago" :
+        diff < TimeSpan.FromDays(7) ? $"{(int)diff.TotalDays} day{((int)diff.TotalDays == 1 ? "" : "s")} ago" :
+        diff < TimeSpan.FromDays(30) ? $"{(int)(diff.TotalDays / 7)} week{((int)(diff.TotalDays / 7) == 1 ? "" : "s")} ago" :
+        $"{(int)(diff.TotalDays / 30)} month{((int)(diff.TotalDays / 30) == 1 ? "" : "s")} ago";
+
+    return $"{relative} ({timestampUtc.ToLocalTime():yyyy-MM-dd HH:mm})";
 }
 
 static async Task RunDiscoveryResponderAsync(int port, string advertisedUrl, CancellationToken ct)
