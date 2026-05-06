@@ -48,6 +48,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly TimeSpan _commandPollInterval;
     private readonly string _localServiceBaseUrl;
     private readonly string _agentVersion;
+    private readonly string _clientIdShort;
     private DateTimeOffset _lastHeartbeatSentUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastCommandPollUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastInstallUtc = DateTimeOffset.MinValue;
@@ -81,6 +82,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _commandPollInterval = TimeSpan.FromSeconds(commandPollSeconds);
         _localServiceBaseUrl = configuration["AbittiAgent:LocalServiceBaseUrl"] ?? LocalServiceBaseUrlDefault;
         _agentVersion = GetAgentVersion();
+        var clientId = ClientIdentity.GetOrCreateClientId();
+        _clientIdShort = clientId.Length <= 8 ? clientId : clientId[..8];
         _loopTimer = new PeriodicTimer(TimeSpan.FromSeconds(5));
 
         var menu = new ContextMenuStrip();
@@ -354,7 +357,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void UpdateTrayStatus(string status)
     {
-        var text = $"Abitti Agent {_agentVersion} - {status}";
+        var text = $"Abitti Agent {_agentVersion} [{_clientIdShort}] - {status}";
         if (text.Length > 63)
             text = text[..63];
 
