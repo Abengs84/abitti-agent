@@ -266,13 +266,31 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
 
     private static async Task RunScheduledTaskAsync(string taskName, CancellationToken ct)
     {
-        var (code, stdout, stderr) = await RunProcessCaptureAsync(
-            "schtasks.exe",
-            $"/Run /TN \"{taskName}\"",
-            ct).ConfigureAwait(false);
+        try
+        {
+            var (code, stdout, stderr) = await RunProcessCaptureAsync(
+                "schtasks.exe",
+                $"/Run /TN \"{taskName}\"",
+                ct).ConfigureAwait(false);
 
-        if (code != 0)
-            throw new InvalidOperationException($"schtasks /Run failed (exit {code}). {stdout} {stderr}".Trim());
+            if (code != 0)
+                throw new InvalidOperationException($"schtasks /Run failed (exit {code}). {stdout} {stderr}".Trim());
+        }
+        finally
+        {
+            // Best-effort cleanup. Avoid using /Z because it requires an EndBoundary in the underlying XML on some systems.
+            try
+            {
+                await RunProcessCaptureAsync(
+                    "schtasks.exe",
+                    $"/Delete /F /TN \"{taskName}\"",
+                    ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                // ignore cleanup failures
+            }
+        }
     }
 
     private static async Task ScheduleSelfUpdateTaskAsync(string taskName, string cmdPath, CancellationToken ct)
@@ -286,7 +304,7 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
 
         var (code, stdout, stderr) = await RunProcessCaptureAsync(
             "schtasks.exe",
-            $"/Create /F /TN \"{taskName}\" /SC ONCE /SD {sd} /ST {st} /RL HIGHEST /RU SYSTEM /TR \"{tr}\" /Z",
+            $"/Create /F /TN \"{taskName}\" /SC ONCE /SD {sd} /ST {st} /RL HIGHEST /RU SYSTEM /TR \"{tr}\"",
             ct).ConfigureAwait(false);
 
         if (code != 0)
