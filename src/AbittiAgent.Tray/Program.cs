@@ -88,7 +88,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             var accepted = await RequestServiceSelfUpdateAsync(CancellationToken.None).ConfigureAwait(false);
             if (accepted)
-                ShowNotification("Abitti Agent", "Agent self-update started", ToolTipIcon.Info);
+            {
+                ShowNotification("Abitti Agent", "Updating… tray will restart shortly", ToolTipIcon.Info);
+                TryScheduleSelfRestart(TimeSpan.FromSeconds(90));
+                ExitThread();
+            }
             else
                 ShowNotification("Abitti Agent", "Agent self-update could not be started", ToolTipIcon.Warning);
         });
@@ -277,6 +281,29 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch
         {
             return false;
+        }
+    }
+
+    private static void TryScheduleSelfRestart(TimeSpan delay)
+    {
+        try
+        {
+            var exePath = Application.ExecutablePath;
+            var seconds = Math.Max(10, (int)delay.TotalSeconds);
+
+            // Use a detached cmd process that waits and relaunches the tray.
+            var cmd = $"ping 127.0.0.1 -n {seconds} >nul & start \"\" \"{exePath}\"";
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/c \"{cmd}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+        }
+        catch
+        {
+            // If restart scheduling fails, user can start tray manually.
         }
     }
 

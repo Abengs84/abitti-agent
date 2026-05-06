@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -216,7 +217,8 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
         Directory.CreateDirectory(tempDir);
         var msiPath = Path.Combine(tempDir, "AbittiAgent-latest.msi");
         var logPath = Path.Combine(tempDir, "abitti-agent-self-update.log");
-        var taskName = @"AbittiAgent\SelfUpdate";
+        var taskName = "AbittiAgentSelfUpdate";
+        var cmdPath = Path.Combine(tempDir, "abitti-agent-self-update.cmd");
 
         try
         {
@@ -229,7 +231,14 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
             await using (var dst = File.Create(msiPath))
                 await src.CopyToAsync(dst, stoppingToken).ConfigureAwait(false);
 
-            await ScheduleSelfUpdateTaskAsync(taskName, msiPath, logPath, stoppingToken).ConfigureAwait(false);
+            await File.WriteAllTextAsync(
+                cmdPath,
+                "@echo off\r\n" +
+                $"msiexec.exe /i \"{msiPath}\" /qn /norestart /L*v \"{logPath}\"\r\n" +
+                "exit /b %errorlevel%\r\n",
+                stoppingToken).ConfigureAwait(false);
+
+            await ScheduleSelfUpdateTaskAsync(taskName, cmdPath, stoppingToken).ConfigureAwait(false);
             await RunScheduledTaskAsync(taskName, stoppingToken).ConfigureAwait(false);
 
             lock (_stateLock)
@@ -257,44 +266,55 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
 
     private static async Task RunScheduledTaskAsync(string taskName, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo
-        {
-            FileName = "schtasks.exe",
-            Arguments = $"/Run /TN \"{taskName}\"",
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        using var p = Process.Start(psi);
-        if (p is null)
-            throw new InvalidOperationException("Failed to start schtasks.exe /Run.");
-        await p.WaitForExitAsync(ct).ConfigureAwait(false);
-        if (p.ExitCode != 0)
-            throw new InvalidOperationException($"schtasks /Run failed (exit {p.ExitCode}).");
+        var (code, stdout, stderr) = await RunProcessCaptureAsync(
+            "schtasks.exe",
+            $"/Run /TN \"{taskName}\"",
+            ct).ConfigureAwait(false);
+
+        if (code != 0)
+            throw new InvalidOperationException($"schtasks /Run failed (exit {code}). {stdout} {stderr}".Trim());
     }
 
-    private static async Task ScheduleSelfUpdateTaskAsync(string taskName, string msiPath, string logPath, CancellationToken ct)
+    private static async Task ScheduleSelfUpdateTaskAsync(string taskName, string cmdPath, CancellationToken ct)
     {
-        var startUtc = DateTimeOffset.UtcNow.AddMinutes(1);
-        var st = startUtc.ToLocalTime().ToString("HH:mm");
+        // Schedule at least 2 minutes ahead to avoid "start time is earlier than current time" edge cases.
+        var startLocal = DateTimeOffset.Now.AddMinutes(2);
+        var st = startLocal.ToString("HH:mm", CultureInfo.InvariantCulture);
+        var sd = startLocal.ToString("MM/dd/yyyy", CultureInfo.InvariantCulture);
 
-        var cmd =
-            $"msiexec.exe /i \"{msiPath}\" /qn /norestart /L*v \"{logPath}\"";
+        var tr = $"cmd.exe /c \"\\\"{cmdPath}\\\"\"";
 
+        var (code, stdout, stderr) = await RunProcessCaptureAsync(
+            "schtasks.exe",
+            $"/Create /F /TN \"{taskName}\" /SC ONCE /SD {sd} /ST {st} /RL HIGHEST /RU SYSTEM /TR \"{tr}\" /Z",
+            ct).ConfigureAwait(false);
+
+        if (code != 0)
+            throw new InvalidOperationException($"schtasks /Create failed (exit {code}). {stdout} {stderr}".Trim());
+    }
+
+    private static async Task<(int ExitCode, string StdOut, string StdErr)> RunProcessCaptureAsync(string fileName, string arguments, CancellationToken ct)
+    {
         var psi = new ProcessStartInfo
         {
-            FileName = "schtasks.exe",
-            Arguments =
-                $"/Create /F /TN \"{taskName}\" /SC ONCE /ST {st} /RL HIGHEST /RU SYSTEM /TR \"{cmd}\" /Z",
+            FileName = fileName,
+            Arguments = arguments,
             UseShellExecute = false,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
         };
 
         using var p = Process.Start(psi);
         if (p is null)
-            throw new InvalidOperationException("Failed to start schtasks.exe /Create.");
+            throw new InvalidOperationException($"Failed to start {fileName}.");
+
+        var stdoutTask = p.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = p.StandardError.ReadToEndAsync(ct);
         await p.WaitForExitAsync(ct).ConfigureAwait(false);
-        if (p.ExitCode != 0)
-            throw new InvalidOperationException($"schtasks /Create failed (exit {p.ExitCode}).");
+        var stdout = await stdoutTask.ConfigureAwait(false);
+        var stderr = await stderrTask.ConfigureAwait(false);
+        return (p.ExitCode, stdout.Trim(), stderr.Trim());
     }
 
     private async Task<string?> ResolveLatestAgentMsiUrlAsync(CancellationToken ct)
