@@ -494,9 +494,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private static string GetAgentVersion()
     {
-        return Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        var raw = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
             ?? "0.0.0";
+        var plusIdx = raw.IndexOf('+');
+        return plusIdx > 0 ? raw[..plusIdx] : raw;
     }
 
     private static bool IsSystemPendingReboot()
