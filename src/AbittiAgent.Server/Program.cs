@@ -48,15 +48,17 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
     static string Esc(string? value) => System.Net.WebUtility.HtmlEncode(value ?? string.Empty);
     var clients = s.ListOrderedByLastSeen();
     var nowUtc = DateTimeOffset.UtcNow;
-    var staleAfter = TimeSpan.FromSeconds(45);
+    var warnAfter = TimeSpan.FromSeconds(45);
+    var offlineAfter = TimeSpan.FromMinutes(5);
 
     var rows = string.Join("", clients.Select(c =>
     {
         var age = nowUtc - c.LastSeenUtc;
-        var isStale = age > staleAfter;
-        var statusClass = isStale ? "status-yellow" : "status-green";
-        var statusText = isStale ? "Missed multiple heartbeats" : "Online";
-        var statusTooltip = $"{statusText} | Last seen: {c.LastSeenUtc.ToLocalTime():yyyy-MM-dd HH:mm} | Last check: {c.LastCheckUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
+        var isOffline = age > offlineAfter;
+        var isStale = age > warnAfter;
+        var statusClass = isOffline ? "status-gray" : isStale ? "status-yellow" : "status-green";
+        var statusText = isOffline ? "Offline" : isStale ? "Missed multiple heartbeats" : "Online";
+        var statusTooltip = $"{statusText} | Last seen: {c.LastSeenUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
         var idShort = c.ClientId.Length <= 12 ? c.ClientId : c.ClientId[..12] + "…";
         var agentShort = ShortAgentVersion(c.AgentVersion);
         var installResult = string.IsNullOrWhiteSpace(c.LastInstallResult) ? "-" : c.LastInstallResult;
@@ -107,6 +109,7 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
         ".status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: middle; }\n" +
         ".status-green { background: #16a34a; }\n" +
         ".status-yellow { background: #ca8a04; }\n" +
+        ".status-gray { background: #6b7280; }\n" +
         ".actions-cell { display: flex; gap: 6px; align-items: center; }\n" +
         ".actions-cell form { margin: 0; }\n" +
         ".actions-cell button { min-width: 84px; }\n" +

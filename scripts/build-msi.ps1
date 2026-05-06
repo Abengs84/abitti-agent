@@ -27,6 +27,9 @@ dotnet publish (Join-Path $repoRoot "src\AbittiAgent.Service\AbittiAgent.Service
     -r $Runtime `
     --self-contained true `
     -p:PublishSingleFile=true `
+    -p:Version=$Version `
+    -p:FileVersion=$Version `
+    -p:InformationalVersion=$Version `
     -o (Join-Path $stagingDir "service")
 
 Write-Host "Publishing tray..."
@@ -35,6 +38,9 @@ dotnet publish (Join-Path $repoRoot "src\AbittiAgent.Tray\AbittiAgent.Tray.cspro
     -r $Runtime `
     --self-contained true `
     -p:PublishSingleFile=true `
+    -p:Version=$Version `
+    -p:FileVersion=$Version `
+    -p:InformationalVersion=$Version `
     -o (Join-Path $stagingDir "tray")
 
 Copy-Item (Join-Path $stagingDir "service\AbittiAgent.Service.exe") $payloadDir -Force
