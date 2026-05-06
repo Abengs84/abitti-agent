@@ -235,6 +235,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _lastHeartbeatSentUtc = DateTimeOffset.MinValue;
                 await SendHeartbeatAsync(serverUrl, ct).ConfigureAwait(false);
                 break;
+            case "update_now":
+                ShowNotification("Abitti Agent", "Tray update started", ToolTipIcon.Info);
+                var accepted = await RequestServiceSelfUpdateAsync(ct).ConfigureAwait(false);
+                if (accepted)
+                {
+                    TryScheduleSelfRestart(TimeSpan.FromSeconds(90));
+                    ExitThread();
+                }
+                else
+                {
+                    ShowNotification("Abitti Agent", "Tray update could not be started", ToolTipIcon.Warning);
+                }
+                break;
         }
     }
 

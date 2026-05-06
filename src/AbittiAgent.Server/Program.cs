@@ -43,10 +43,11 @@ if (discoveryEnabled)
     app.Lifetime.ApplicationStopping.Register(() => discoveryStopCts.Cancel());
 }
 
-app.MapGet("/", (ClientStore s, CommandStore commands) =>
+app.MapGet("/", async (ClientStore s, CommandStore commands) =>
 {
     static string Esc(string? value) => System.Net.WebUtility.HtmlEncode(value ?? string.Empty);
     var clients = s.ListOrderedByLastSeen();
+    var latestTrayVersion = await ResolveLatestTrayVersionAsync().ConfigureAwait(false);
     var nowUtc = DateTimeOffset.UtcNow;
     var warnAfter = TimeSpan.FromSeconds(45);
     var offlineAfter = TimeSpan.FromMinutes(5);
@@ -62,8 +63,13 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
         var statusTooltip = $"{statusText} | Last seen: {lastSeenText}";
         var idShort = c.ClientId.Length <= 12 ? c.ClientId : c.ClientId[..12] + "…";
         var agentShort = ShortAgentVersion(c.AgentVersion);
+        var hasNewerTray = IsVersionNewer(latestTrayVersion, agentShort);
+        var trayText = hasNewerTray
+            ? $"{agentShort} <span title=\"New tray version available: {Esc(latestTrayVersion)}\">&#9888;</span>"
+            : Esc(agentShort);
         var installResult = string.IsNullOrWhiteSpace(c.LastInstallResult) ? "-" : c.LastInstallResult;
         var lastError = string.IsNullOrWhiteSpace(c.LastError) ? "-" : c.LastError;
+        var installAndError = lastError == "-" ? installResult : $"{installResult} ({lastError})";
         var pendingCount = commands.GetPendingCount(c.ClientId);
         var cmdStatus = pendingCount > 0
             ? $"queued ({pendingCount})"
@@ -79,10 +85,9 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
           <td><span class="status-dot {statusClass}" title="{Esc(statusTooltip)}"></span>{Esc(idShort)}</td>
           <td>{Esc(c.Hostname)}</td>
           <td>{Esc(c.AbittiVersionInstalled)}</td>
-          <td title="{Esc(c.AgentVersion)}">{Esc(agentShort)}</td>
+          <td title="{Esc(c.AgentVersion)}">{trayText}</td>
           <td>{Esc(c.SourceIp)}</td>
-          <td>{Esc(installResult)}</td>
-          <td>{Esc(lastError)}</td>
+          <td title="{Esc(lastError)}">{Esc(installAndError)}</td>
           <td>{Esc(cmdStatus)}</td>
           <td class="actions-cell">
             <form method="post" action="/api/admin/clients/{Esc(c.ClientId)}/commands/check_now">
@@ -90,6 +95,9 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
             </form>
             <form method="post" action="/api/admin/clients/{Esc(c.ClientId)}/commands/install_now">
               <button type="submit">Install now</button>
+            </form>
+            <form method="post" action="/api/admin/clients/{Esc(c.ClientId)}/commands/update_now">
+              <button type="submit">Update tray</button>
             </form>
           </td>
         </tr>
@@ -125,7 +133,7 @@ app.MapGet("/", (ClientStore s, CommandStore commands) =>
         "</label>\n" +
         "<table>\n" +
         "<thead><tr>\n" +
-        "<th>Client</th><th>Hostname</th><th>Abitti</th><th>Tray</th><th>Source IP</th><th>Install result</th><th>Last error</th><th>Cmd status</th><th>Actions</th>\n" +
+        "<th>Client</th><th>Hostname</th><th>Abitti</th><th>Tray</th><th>Source IP</th><th>Install / error</th><th>Cmd status</th><th>Actions</th>\n" +
         "</tr></thead>\n" +
         "<tbody>\n" +
         rows +
@@ -167,7 +175,7 @@ app.MapPost("/api/admin/clients/{clientId}/commands/{type}", (string clientId, s
         return Results.BadRequest("clientId required");
 
     var normalizedType = type.Trim().ToLowerInvariant();
-    if (normalizedType is not ("check_now" or "install_now"))
+    if (normalizedType is not ("check_now" or "install_now" or "update_now"))
         return Results.BadRequest("unsupported command type");
 
     commands.Enqueue(clientId, normalizedType);
@@ -320,6 +328,38 @@ static string FormatRelativeWithTimestamp(DateTimeOffset timestampUtc, DateTimeO
         $"{(int)(diff.TotalDays / 30)} month{((int)(diff.TotalDays / 30) == 1 ? "" : "s")} ago";
 
     return $"{relative} ({timestampUtc.ToLocalTime():yyyy-MM-dd HH:mm})";
+}
+
+static async Task<string?> ResolveLatestTrayVersionAsync()
+{
+    try
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("AbittiAgent.Server/1.0");
+        using var stream = await http.GetStreamAsync("https://api.github.com/repos/Abengs84/abitti-agent/releases/latest").ConfigureAwait(false);
+        using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream).ConfigureAwait(false);
+        if (!doc.RootElement.TryGetProperty("tag_name", out var tagEl))
+            return null;
+        var tag = tagEl.GetString();
+        if (string.IsNullOrWhiteSpace(tag))
+            return null;
+        return tag.StartsWith("v", StringComparison.OrdinalIgnoreCase) ? tag[1..] : tag;
+    }
+    catch
+    {
+        return null;
+    }
+}
+
+static bool IsVersionNewer(string? latestVersion, string currentVersion)
+{
+    if (string.IsNullOrWhiteSpace(latestVersion))
+        return false;
+    if (!Version.TryParse(latestVersion, out var latest))
+        return false;
+    if (!Version.TryParse(currentVersion, out var current))
+        return false;
+    return latest > current;
 }
 
 static async Task RunDiscoveryResponderAsync(int port, string advertisedUrl, CancellationToken ct)
