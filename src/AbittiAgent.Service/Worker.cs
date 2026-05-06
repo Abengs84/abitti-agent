@@ -216,6 +216,7 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
         Directory.CreateDirectory(tempDir);
         var msiPath = Path.Combine(tempDir, "AbittiAgent-latest.msi");
         var logPath = Path.Combine(tempDir, "abitti-agent-self-update.log");
+        var taskName = @"AbittiAgent\SelfUpdate";
 
         try
         {
@@ -228,33 +229,14 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
             await using (var dst = File.Create(msiPath))
                 await src.CopyToAsync(dst, stoppingToken).ConfigureAwait(false);
 
-            var psi = new ProcessStartInfo
-            {
-                FileName = "msiexec.exe",
-                Arguments = $"/i \"{msiPath}\" /qn /norestart /L*v \"{logPath}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            using var process = Process.Start(psi);
-            if (process is null)
-                throw new InvalidOperationException("Failed to start msiexec for self-update.");
-
-            await process.WaitForExitAsync(stoppingToken).ConfigureAwait(false);
+            await ScheduleSelfUpdateTaskAsync(taskName, msiPath, logPath, stoppingToken).ConfigureAwait(false);
+            await RunScheduledTaskAsync(taskName, stoppingToken).ConfigureAwait(false);
 
             lock (_stateLock)
             {
                 _lastAgentUpdateUtc = DateTimeOffset.UtcNow;
-                if (process.ExitCode == 0 || process.ExitCode == 3010)
-                {
-                    _lastAgentUpdateResult = process.ExitCode == 3010 ? "Success (reboot required)" : "Success";
-                    _lastAgentUpdateError = string.Empty;
-                }
-                else
-                {
-                    _lastAgentUpdateResult = $"Failed ({process.ExitCode})";
-                    _lastAgentUpdateError = $"msiexec exit code {process.ExitCode}";
-                }
+                _lastAgentUpdateResult = "Scheduled";
+                _lastAgentUpdateError = string.Empty;
             }
         }
         catch (Exception ex)
@@ -271,6 +253,48 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
         {
             _agentUpdateRunning = false;
         }
+    }
+
+    private static async Task RunScheduledTaskAsync(string taskName, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "schtasks.exe",
+            Arguments = $"/Run /TN \"{taskName}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var p = Process.Start(psi);
+        if (p is null)
+            throw new InvalidOperationException("Failed to start schtasks.exe /Run.");
+        await p.WaitForExitAsync(ct).ConfigureAwait(false);
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException($"schtasks /Run failed (exit {p.ExitCode}).");
+    }
+
+    private static async Task ScheduleSelfUpdateTaskAsync(string taskName, string msiPath, string logPath, CancellationToken ct)
+    {
+        var startUtc = DateTimeOffset.UtcNow.AddMinutes(1);
+        var st = startUtc.ToLocalTime().ToString("HH:mm");
+
+        var cmd =
+            $"msiexec.exe /i \"{msiPath}\" /qn /norestart /L*v \"{logPath}\"";
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = "schtasks.exe",
+            Arguments =
+                $"/Create /F /TN \"{taskName}\" /SC ONCE /ST {st} /RL HIGHEST /RU SYSTEM /TR \"{cmd}\" /Z",
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var p = Process.Start(psi);
+        if (p is null)
+            throw new InvalidOperationException("Failed to start schtasks.exe /Create.");
+        await p.WaitForExitAsync(ct).ConfigureAwait(false);
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException($"schtasks /Create failed (exit {p.ExitCode}).");
     }
 
     private async Task<string?> ResolveLatestAgentMsiUrlAsync(CancellationToken ct)
