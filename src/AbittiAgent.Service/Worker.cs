@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
@@ -11,14 +12,20 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
 {
     private readonly object _stateLock = new();
     private volatile bool _installRunning;
+    private volatile bool _agentUpdateRunning;
     private DateTimeOffset _lastInstallUtc = DateTimeOffset.MinValue;
     private string _lastInstallResult = string.Empty;
     private string _lastError = string.Empty;
+    private DateTimeOffset _lastAgentUpdateUtc = DateTimeOffset.MinValue;
+    private string _lastAgentUpdateResult = string.Empty;
+    private string _lastAgentUpdateError = string.Empty;
 
     private readonly string _installerUrl =
         configuration["AbittiAgent:InstallerUrl"] ?? "https://dl.abitti.fi/AbittiCandidateInstaller.msi";
     private readonly string _localApiUrl =
         configuration["AbittiAgent:LocalApiUrl"] ?? "http://127.0.0.1:38181/";
+    private readonly string _githubOwner = configuration["AbittiAgent:UpdateRepoOwner"] ?? "Abengs84";
+    private readonly string _githubRepo = configuration["AbittiAgent:UpdateRepoName"] ?? "abitti-agent";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -89,6 +96,20 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
                 }
 
                 _ = Task.Run(() => RunInstallAsync(stoppingToken), stoppingToken);
+                await WriteJsonAsync(res, new { accepted = true });
+                return;
+            }
+
+            if (req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) &&
+                req.Url.AbsolutePath.Equals("/self-update", StringComparison.OrdinalIgnoreCase))
+            {
+                if (_agentUpdateRunning)
+                {
+                    await WriteJsonAsync(res, new { accepted = false, reason = "already-running" });
+                    return;
+                }
+
+                _ = Task.Run(() => RunAgentSelfUpdateAsync(stoppingToken), stoppingToken);
                 await WriteJsonAsync(res, new { accepted = true });
                 return;
             }
@@ -181,6 +202,106 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
         }
     }
 
+    private async Task RunAgentSelfUpdateAsync(CancellationToken stoppingToken)
+    {
+        lock (_stateLock)
+        {
+            _agentUpdateRunning = true;
+            _lastAgentUpdateUtc = DateTimeOffset.UtcNow;
+            _lastAgentUpdateResult = "Running";
+            _lastAgentUpdateError = string.Empty;
+        }
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "AbittiAgent");
+        Directory.CreateDirectory(tempDir);
+        var msiPath = Path.Combine(tempDir, "AbittiAgent-latest.msi");
+        var logPath = Path.Combine(tempDir, "abitti-agent-self-update.log");
+
+        try
+        {
+            var downloadUrl = await ResolveLatestAgentMsiUrlAsync(stoppingToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(downloadUrl))
+                throw new InvalidOperationException("No matching MSI asset found in latest GitHub release.");
+
+            using (var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) })
+            await using (var src = await http.GetStreamAsync(downloadUrl, stoppingToken).ConfigureAwait(false))
+            await using (var dst = File.Create(msiPath))
+                await src.CopyToAsync(dst, stoppingToken).ConfigureAwait(false);
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "msiexec.exe",
+                Arguments = $"/i \"{msiPath}\" /qn /norestart /L*v \"{logPath}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(psi);
+            if (process is null)
+                throw new InvalidOperationException("Failed to start msiexec for self-update.");
+
+            await process.WaitForExitAsync(stoppingToken).ConfigureAwait(false);
+
+            lock (_stateLock)
+            {
+                _lastAgentUpdateUtc = DateTimeOffset.UtcNow;
+                if (process.ExitCode == 0 || process.ExitCode == 3010)
+                {
+                    _lastAgentUpdateResult = process.ExitCode == 3010 ? "Success (reboot required)" : "Success";
+                    _lastAgentUpdateError = string.Empty;
+                }
+                else
+                {
+                    _lastAgentUpdateResult = $"Failed ({process.ExitCode})";
+                    _lastAgentUpdateError = $"msiexec exit code {process.ExitCode}";
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            lock (_stateLock)
+            {
+                _lastAgentUpdateUtc = DateTimeOffset.UtcNow;
+                _lastAgentUpdateResult = "Failed";
+                _lastAgentUpdateError = ex.Message;
+            }
+            logger.LogError(ex, "Agent self-update failed");
+        }
+        finally
+        {
+            _agentUpdateRunning = false;
+        }
+    }
+
+    private async Task<string?> ResolveLatestAgentMsiUrlAsync(CancellationToken ct)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("AbittiAgentService", "1.0"));
+
+        var apiUrl = $"https://api.github.com/repos/{_githubOwner}/{_githubRepo}/releases/latest";
+        using var stream = await http.GetStreamAsync(apiUrl, ct).ConfigureAwait(false);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
+
+        if (!doc.RootElement.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
+            return null;
+
+        foreach (var asset in assets.EnumerateArray())
+        {
+            if (!asset.TryGetProperty("name", out var nameEl) || nameEl.ValueKind != JsonValueKind.String)
+                continue;
+            var name = nameEl.GetString();
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+            if (!name.StartsWith("AbittiAgent-", StringComparison.OrdinalIgnoreCase) || !name.EndsWith("-win-x64.msi", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (asset.TryGetProperty("browser_download_url", out var urlEl) && urlEl.ValueKind == JsonValueKind.String)
+                return urlEl.GetString();
+        }
+
+        return null;
+    }
+
     private object GetStatus()
     {
         lock (_stateLock)
@@ -190,7 +311,11 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
                 installRunning = _installRunning,
                 lastInstallUtc = _lastInstallUtc,
                 lastInstallResult = _lastInstallResult,
-                lastError = _lastError
+                lastError = _lastError,
+                agentUpdateRunning = _agentUpdateRunning,
+                lastAgentUpdateUtc = _lastAgentUpdateUtc,
+                lastAgentUpdateResult = _lastAgentUpdateResult,
+                lastAgentUpdateError = _lastAgentUpdateError
             };
         }
     }

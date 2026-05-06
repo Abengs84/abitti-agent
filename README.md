@@ -31,6 +31,7 @@ The page includes the admin client list and the API endpoints.
 - `AbittiAgent.Tray` no longer runs MSI directly.
 - Tray calls local `AbittiAgent.Service` API at `http://127.0.0.1:38181/`.
 - Service performs silent MSI install in background (`msiexec /qn`) as the service account.
+- Tray can trigger agent self-update from the tray menu (`Update agent`), and service installs the latest client MSI from GitHub Releases.
 - For true zero-click updates, `AbittiAgent.Service` must be installed and running on each client.
 
 ## Client autostart setup

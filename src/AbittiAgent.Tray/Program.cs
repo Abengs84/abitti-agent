@@ -84,6 +84,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _loopTimer = new PeriodicTimer(TimeSpan.FromSeconds(5));
 
         var menu = new ContextMenuStrip();
+        menu.Items.Add("Update agent", null, async (_, _) =>
+        {
+            var accepted = await RequestServiceSelfUpdateAsync(CancellationToken.None).ConfigureAwait(false);
+            if (accepted)
+                ShowNotification("Abitti Agent", "Agent self-update started", ToolTipIcon.Info);
+            else
+                ShowNotification("Abitti Agent", "Agent self-update could not be started", ToolTipIcon.Warning);
+        });
         menu.Items.Add("Exit", null, (_, _) => ExitThread());
 
         _notifyIcon = new NotifyIcon
@@ -248,6 +256,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (Exception ex)
         {
             _lastError = ex.Message;
+            return false;
+        }
+    }
+
+    private async Task<bool> RequestServiceSelfUpdateAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var http = new HttpClient
+            {
+                BaseAddress = new Uri(_localServiceBaseUrl.TrimEnd('/') + "/"),
+                Timeout = TimeSpan.FromSeconds(10)
+            };
+            using var response = await http.PostAsync("self-update", null, ct).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var result = await response.Content.ReadFromJsonAsync<InstallRequestResult>(cancellationToken: ct).ConfigureAwait(false);
+            return result?.Accepted ?? false;
+        }
+        catch
+        {
             return false;
         }
     }
