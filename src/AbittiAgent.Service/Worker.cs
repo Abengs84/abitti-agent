@@ -27,6 +27,9 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
         configuration["AbittiAgent:LocalApiUrl"] ?? "http://127.0.0.1:38181/";
     private readonly string _githubOwner = configuration["AbittiAgent:UpdateRepoOwner"] ?? "Abengs84";
     private readonly string _githubRepo = configuration["AbittiAgent:UpdateRepoName"] ?? "abitti-agent";
+    private readonly string _updateMsiLatestUrl =
+        configuration["AbittiAgent:UpdateMsiLatestUrl"]
+        ?? "https://github.com/Abengs84/abitti-agent/releases/latest/download/AbittiAgent-latest-win-x64.msi";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -222,7 +225,7 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
 
         try
         {
-            var downloadUrl = await ResolveLatestAgentMsiUrlAsync(stoppingToken).ConfigureAwait(false);
+            var downloadUrl = ResolveLatestAgentMsiUrl();
             if (string.IsNullOrWhiteSpace(downloadUrl))
                 throw new InvalidOperationException("No matching MSI asset found in latest GitHub release.");
 
@@ -335,33 +338,11 @@ public sealed class Worker(IConfiguration configuration, ILogger<Worker> logger)
         return (p.ExitCode, stdout.Trim(), stderr.Trim());
     }
 
-    private async Task<string?> ResolveLatestAgentMsiUrlAsync(CancellationToken ct)
+    private string ResolveLatestAgentMsiUrl()
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("AbittiAgentService", "1.0"));
-
-        var apiUrl = $"https://api.github.com/repos/{_githubOwner}/{_githubRepo}/releases/latest";
-        using var stream = await http.GetStreamAsync(apiUrl, ct).ConfigureAwait(false);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
-
-        if (!doc.RootElement.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
-            return null;
-
-        foreach (var asset in assets.EnumerateArray())
-        {
-            if (!asset.TryGetProperty("name", out var nameEl) || nameEl.ValueKind != JsonValueKind.String)
-                continue;
-            var name = nameEl.GetString();
-            if (string.IsNullOrWhiteSpace(name))
-                continue;
-            if (!name.StartsWith("AbittiAgent-", StringComparison.OrdinalIgnoreCase) || !name.EndsWith("-win-x64.msi", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            if (asset.TryGetProperty("browser_download_url", out var urlEl) && urlEl.ValueKind == JsonValueKind.String)
-                return urlEl.GetString();
-        }
-
-        return null;
+        // Avoid GitHub API to prevent rate limiting. Use direct release download URL.
+        // This requires releases to upload an asset with a stable "latest" filename.
+        return _updateMsiLatestUrl;
     }
 
     private object GetStatus()

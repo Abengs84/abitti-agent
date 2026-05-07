@@ -15,6 +15,7 @@ $payloadDir = Join-Path $stagingDir "payload"
 $wxsPath = Join-Path $repoRoot "installer\AbittiAgent.Installer.wxs"
 $iconPath = Join-Path $repoRoot "assets\AbittiAgent.ico"
 $msiPath = Join-Path $outputRoot "AbittiAgent-$Version-$Runtime.msi"
+$msiLatestPath = Join-Path $outputRoot "AbittiAgent-latest-$Runtime.msi"
 
 Write-Host "Preparing folders..."
 if (Test-Path $stagingDir) { Remove-Item -Path $stagingDir -Recurse -Force }
@@ -76,5 +77,7 @@ wix build $wxsPath `
     -d IconPath="$iconPath" `
     -d Version="$Version" `
     -o $msiPath
+
+Copy-Item $msiPath $msiLatestPath -Force
 
 Write-Host "MSI built: $msiPath"

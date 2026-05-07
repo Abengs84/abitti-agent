@@ -240,17 +240,26 @@ app.MapGet("/", async (ClientStore s, CommandStore commands) =>
     {
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            // Avoid GitHub API (rate limits). Use redirect target of /releases/latest:
+            // Location: .../releases/tag/vX.Y.Z
+            using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
             http.DefaultRequestHeaders.UserAgent.ParseAdd("AbittiAgent.Server/1.0");
-            var url = $"https://api.github.com/repos/{latestTrayOwner}/{latestTrayRepo}/releases/latest";
-            using var stream = await http.GetStreamAsync(url).ConfigureAwait(false);
-            using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream).ConfigureAwait(false);
-            if (!doc.RootElement.TryGetProperty("tag_name", out var tagEl))
+
+            var url = $"https://github.com/{latestTrayOwner}/{latestTrayRepo}/releases/latest";
+            using var req = new HttpRequestMessage(HttpMethod.Head, url);
+            using var res = await http.SendAsync(req).ConfigureAwait(false);
+            if ((int)res.StatusCode < 300 || (int)res.StatusCode >= 400)
                 return null;
-            var tag = tagEl.GetString();
-            if (string.IsNullOrWhiteSpace(tag))
+
+            var location = res.Headers.Location?.ToString() ?? string.Empty;
+            var idx = location.LastIndexOf("/tag/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0)
                 return null;
-            return tag.StartsWith("v", StringComparison.OrdinalIgnoreCase) ? tag[1..] : tag;
+            var tag = location[(idx + "/tag/".Length)..];
+            if (tag.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+                tag = tag[1..];
+            return string.IsNullOrWhiteSpace(tag) ? null : tag;
         }
         catch
         {
