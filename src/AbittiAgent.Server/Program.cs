@@ -12,6 +12,13 @@ using Forms = System.Windows.Forms;
 const string DiscoveryRequest = "ABITTI_DISCOVER_REQUEST_V1";
 const string DiscoveryResponsePrefix = "ABITTI_DISCOVER_RESPONSE_V1|";
 
+var latestTrayOwner = "Abengs84";
+var latestTrayRepo = "abitti-agent";
+var latestTrayTtl = TimeSpan.FromMinutes(5);
+var latestTrayGate = new object();
+var latestTrayNextRefreshUtc = DateTimeOffset.MinValue;
+string? latestTrayCachedVersion = null;
+
 var builder = WebApplication.CreateBuilder(args);
 
 var urls = builder.Configuration["Urls"] ?? "http://127.0.0.1:5188";
@@ -47,10 +54,11 @@ app.MapGet("/", async (ClientStore s, CommandStore commands) =>
 {
     static string Esc(string? value) => System.Net.WebUtility.HtmlEncode(value ?? string.Empty);
     var clients = s.ListOrderedByLastSeen();
-    var latestTrayVersion = await ResolveLatestTrayVersionAsync().ConfigureAwait(false);
+    var latestTrayVersion = await GetLatestTrayVersionCachedAsync().ConfigureAwait(false);
     var nowUtc = DateTimeOffset.UtcNow;
     var warnAfter = TimeSpan.FromSeconds(45);
     var offlineAfter = TimeSpan.FromMinutes(5);
+    var decayAfter = TimeSpan.FromMinutes(5);
 
     var rows = string.Join("", clients.Select(c =>
     {
@@ -67,9 +75,12 @@ app.MapGet("/", async (ClientStore s, CommandStore commands) =>
         var trayText = hasNewerTray
             ? $"{agentShort} <span title=\"New tray version available: {Esc(latestTrayVersion)}\">&#9888;</span>"
             : Esc(agentShort);
-        var installResult = string.IsNullOrWhiteSpace(c.LastInstallResult) ? "-" : c.LastInstallResult;
-        var lastError = string.IsNullOrWhiteSpace(c.LastError) ? "-" : c.LastError;
+
+        var staleInstall = nowUtc - c.LastInstallUtc > decayAfter;
+        var installResult = staleInstall || string.IsNullOrWhiteSpace(c.LastInstallResult) ? "-" : c.LastInstallResult;
+        var lastError = staleInstall || string.IsNullOrWhiteSpace(c.LastError) ? "-" : c.LastError;
         var installAndError = lastError == "-" ? installResult : $"{installResult} ({lastError})";
+
         var pendingCount = commands.GetPendingCount(c.ClientId);
         var cmdStatus = pendingCount > 0
             ? $"queued ({pendingCount})"
@@ -115,6 +126,8 @@ app.MapGet("/", async (ClientStore s, CommandStore commands) =>
         "table { border-collapse: collapse; width: 100%; max-width: 1400px; }\n" +
         "th, td { border: 1px solid #ccc; padding: 8px; text-align: left; white-space: nowrap; }\n" +
         "th { background: #f4f4f4; }\n" +
+        "th.sortable { cursor: pointer; user-select: none; }\n" +
+        "th.sortable:hover { background: #ececec; }\n" +
         ".status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: middle; }\n" +
         ".status-green { background: #16a34a; }\n" +
         ".status-yellow { background: #ca8a04; }\n" +
@@ -127,13 +140,25 @@ app.MapGet("/", async (ClientStore s, CommandStore commands) =>
         "<body>\n" +
         "<h1>Abitti Agent — Clients</h1>\n" +
         $"<p>Clients: <strong>{clients.Count}</strong> | Backend/API: <code>/api/admin/clients</code> — auto-refresh every 10s.</p>\n" +
-        "<label style=\"display:inline-flex; gap:8px; align-items:center; margin-bottom:10px;\">" +
+        "<div style=\"display:flex; gap:14px; align-items:center; margin-bottom:10px;\">\n" +
+        "<label style=\"display:inline-flex; gap:8px; align-items:center;\">" +
         "<input id=\"hideOffline\" type=\"checkbox\" />" +
         "<span>Hide offline clients</span>" +
         "</label>\n" +
+        "<form method=\"post\" action=\"/api/admin/clients/purge_offline\" style=\"margin:0;\">\n" +
+        "  <button type=\"submit\">Purge offline</button>\n" +
+        "</form>\n" +
+        "</div>\n" +
         "<table>\n" +
         "<thead><tr>\n" +
-        "<th>Client</th><th>Hostname</th><th>Abitti</th><th>Tray</th><th>Source IP</th><th>Install / error</th><th>Cmd status</th><th>Actions</th>\n" +
+        "<th class=\"sortable\" data-col=\"0\">Client</th>" +
+        "<th class=\"sortable\" data-col=\"1\">Hostname</th>" +
+        "<th class=\"sortable\" data-col=\"2\">Abitti</th>" +
+        "<th class=\"sortable\" data-col=\"3\">Tray</th>" +
+        "<th class=\"sortable\" data-col=\"4\">Source IP</th>" +
+        "<th class=\"sortable\" data-col=\"5\">Install / error</th>" +
+        "<th class=\"sortable\" data-col=\"6\">Cmd status</th>" +
+        "<th>Actions</th>\n" +
         "</tr></thead>\n" +
         "<tbody>\n" +
         rows +
@@ -141,22 +166,97 @@ app.MapGet("/", async (ClientStore s, CommandStore commands) =>
         "</table>\n" +
         "<script>\n" +
         "const hideOffline = document.getElementById('hideOffline');\n" +
-        "const rows = Array.from(document.querySelectorAll('tbody tr'));\n" +
+        "const tbody = document.querySelector('tbody');\n" +
+        "const rows = () => Array.from(document.querySelectorAll('tbody tr'));\n" +
         "const applyFilter = () => {\n" +
         "  const hide = hideOffline && hideOffline.checked;\n" +
-        "  rows.forEach(r => {\n" +
+        "  rows().forEach(r => {\n" +
         "    const isOffline = r.getAttribute('data-offline') === 'true';\n" +
         "    r.style.display = hide && isOffline ? 'none' : '';\n" +
         "  });\n" +
         "};\n" +
         "if (hideOffline) {\n" +
+        "  const saved = localStorage.getItem('abitti_hide_offline');\n" +
+        "  if (saved === '1') hideOffline.checked = true;\n" +
         "  hideOffline.addEventListener('change', applyFilter);\n" +
+        "  hideOffline.addEventListener('change', () => localStorage.setItem('abitti_hide_offline', hideOffline.checked ? '1' : '0'));\n" +
         "  applyFilter();\n" +
         "}\n" +
+        "\n" +
+        "let sortCol = -1;\n" +
+        "let sortDir = 1;\n" +
+        "const parseVersion = (s) => {\n" +
+        "  const m = (s||'').match(/\\d+\\.\\d+\\.\\d+/);\n" +
+        "  if (!m) return [0,0,0];\n" +
+        "  return m[0].split('.').map(x => parseInt(x,10) || 0);\n" +
+        "};\n" +
+        "const cmpArr = (a,b) => a[0]-b[0] || a[1]-b[1] || a[2]-b[2];\n" +
+        "const getCellText = (tr, idx) => (tr.children[idx]?.textContent || '').trim();\n" +
+        "const compare = (idx, a, b) => {\n" +
+        "  const av = getCellText(a, idx);\n" +
+        "  const bv = getCellText(b, idx);\n" +
+        "  if (idx === 2 || idx === 3) return cmpArr(parseVersion(av), parseVersion(bv));\n" +
+        "  return av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });\n" +
+        "};\n" +
+        "const applySort = () => {\n" +
+        "  if (!tbody || sortCol < 0) return;\n" +
+        "  const list = rows();\n" +
+        "  list.sort((a,b) => sortDir * compare(sortCol, a, b));\n" +
+        "  list.forEach(r => tbody.appendChild(r));\n" +
+        "};\n" +
+        "document.querySelectorAll('th.sortable').forEach(th => {\n" +
+        "  th.addEventListener('click', () => {\n" +
+        "    const col = parseInt(th.getAttribute('data-col')||'-1',10);\n" +
+        "    if (col < 0) return;\n" +
+        "    if (sortCol === col) sortDir = -sortDir; else { sortCol = col; sortDir = 1; }\n" +
+        "    applySort();\n" +
+        "    applyFilter();\n" +
+        "  });\n" +
+        "});\n" +
         "</script>\n" +
         "</body>\n</html>";
 
     return Results.Content(html, "text/html; charset=utf-8");
+
+    async Task<string?> GetLatestTrayVersionCachedAsync()
+    {
+        lock (latestTrayGate)
+        {
+            if (DateTimeOffset.UtcNow < latestTrayNextRefreshUtc)
+                return latestTrayCachedVersion;
+        }
+
+        var fetched = await FetchLatestTrayVersionAsync().ConfigureAwait(false);
+        lock (latestTrayGate)
+        {
+            if (!string.IsNullOrWhiteSpace(fetched))
+                latestTrayCachedVersion = fetched;
+            latestTrayNextRefreshUtc = DateTimeOffset.UtcNow.Add(latestTrayTtl);
+            return latestTrayCachedVersion;
+        }
+    }
+
+    async Task<string?> FetchLatestTrayVersionAsync()
+    {
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("AbittiAgent.Server/1.0");
+            var url = $"https://api.github.com/repos/{latestTrayOwner}/{latestTrayRepo}/releases/latest";
+            using var stream = await http.GetStreamAsync(url).ConfigureAwait(false);
+            using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream).ConfigureAwait(false);
+            if (!doc.RootElement.TryGetProperty("tag_name", out var tagEl))
+                return null;
+            var tag = tagEl.GetString();
+            if (string.IsNullOrWhiteSpace(tag))
+                return null;
+            return tag.StartsWith("v", StringComparison.OrdinalIgnoreCase) ? tag[1..] : tag;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 });
 
 app.MapPost("/api/heartbeat", (ClientHeartbeat heartbeat, ClientStore s, HttpContext ctx) =>
@@ -169,6 +269,11 @@ app.MapPost("/api/heartbeat", (ClientHeartbeat heartbeat, ClientStore s, HttpCon
 });
 
 app.MapGet("/api/admin/clients", (ClientStore s) => Results.Ok(s.ListOrderedByLastSeen()));
+app.MapPost("/api/admin/clients/purge_offline", (ClientStore s) =>
+{
+    _ = s.PurgeOffline(TimeSpan.FromMinutes(5));
+    return Results.Redirect("/");
+});
 app.MapPost("/api/admin/clients/{clientId}/commands/{type}", (string clientId, string type, CommandStore commands) =>
 {
     if (string.IsNullOrWhiteSpace(clientId))
@@ -328,27 +433,6 @@ static string FormatRelativeWithTimestamp(DateTimeOffset timestampUtc, DateTimeO
         $"{(int)(diff.TotalDays / 30)} month{((int)(diff.TotalDays / 30) == 1 ? "" : "s")} ago";
 
     return $"{relative} ({timestampUtc.ToLocalTime():yyyy-MM-dd HH:mm})";
-}
-
-static async Task<string?> ResolveLatestTrayVersionAsync()
-{
-    try
-    {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("AbittiAgent.Server/1.0");
-        using var stream = await http.GetStreamAsync("https://api.github.com/repos/Abengs84/abitti-agent/releases/latest").ConfigureAwait(false);
-        using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream).ConfigureAwait(false);
-        if (!doc.RootElement.TryGetProperty("tag_name", out var tagEl))
-            return null;
-        var tag = tagEl.GetString();
-        if (string.IsNullOrWhiteSpace(tag))
-            return null;
-        return tag.StartsWith("v", StringComparison.OrdinalIgnoreCase) ? tag[1..] : tag;
-    }
-    catch
-    {
-        return null;
-    }
 }
 
 static bool IsVersionNewer(string? latestVersion, string currentVersion)

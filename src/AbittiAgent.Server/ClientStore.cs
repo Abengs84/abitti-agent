@@ -27,6 +27,21 @@ public sealed class ClientStore
         _byId[heartbeat.ClientId] = new StoredClient(heartbeat, sourceIp, seen);
     }
 
+    public int PurgeOffline(TimeSpan olderThan)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var removed = 0;
+        foreach (var kvp in _byId)
+        {
+            if (now - kvp.Value.LastSeenUtc <= olderThan)
+                continue;
+            if (_byId.TryRemove(kvp.Key, out _))
+                removed++;
+        }
+
+        return removed;
+    }
+
     public IReadOnlyList<ClientSummary> ListOrderedByLastSeen()
     {
         return _byId.Values
